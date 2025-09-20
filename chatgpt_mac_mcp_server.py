@@ -38,7 +38,7 @@ import os
 import platform
 import subprocess
 from dataclasses import dataclass
-from typing import Iterable, Sequence, Dict, Any
+from typing import Iterable, Sequence, Dict, Any, List
 
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
@@ -71,7 +71,7 @@ def _validate_button(button: str) -> str:
     return normalized
 
 
-async def _run_command(cmd: list[str]) -> dict[str, str]:
+async def _run_command(cmd: list[str]) -> dict[str, Any]:
     """Run a shell command and return the result."""
     try:
         process = await asyncio.create_subprocess_exec(
@@ -174,6 +174,28 @@ def create_app(host: str = "127.0.0.1", port: int = 8765) -> FastAPI:
                 },
                 "required": ["title", "message"]
             }
+        },
+        {
+            "name": "search",
+            "description": "Search Mac system information, files, and command outputs",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query string"}
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "fetch", 
+            "description": "Fetch full content of a system resource by ID",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Unique identifier for the resource"}
+                },
+                "required": ["id"]
+            }
         }
     ]
     
@@ -240,6 +262,83 @@ def create_app(host: str = "127.0.0.1", port: int = 8765) -> FastAPI:
                         return {"success": False, "error": result["stderr"]}
                 except Exception as e:
                     return {"success": False, "error": str(e)}
+            elif name == "search":
+                query = arguments.get("query", "")
+                if not query.strip():
+                    return {"error": "Search query cannot be empty"}
+                
+                results = []
+                
+                if any(term in query.lower() for term in ["system", "platform", "info", "version"]):
+                    results.append({
+                        "id": "system_info",
+                        "title": "System Information",
+                        "url": f"system://info"
+                    })
+                
+                if any(term in query.lower() for term in ["process", "running", "task"]):
+                    results.append({
+                        "id": "processes",
+                        "title": "Running Processes",
+                        "url": f"system://processes"
+                    })
+                
+                if any(term in query.lower() for term in ["file", "document", "home"]):
+                    try:
+                        home_path = os.path.expanduser("~")
+                        for item in os.listdir(home_path)[:10]:  # Limit results
+                            if query.lower() in item.lower():
+                                results.append({
+                                    "id": f"file_{item}",
+                                    "title": f"File: {item}",
+                                    "url": f"file://{os.path.join(home_path, item)}"
+                                })
+                    except Exception:
+                        pass
+                
+                return {"results": results}
+            elif name == "fetch":
+                resource_id = arguments.get("id", "")
+                if not resource_id:
+                    return {"error": "Resource ID is required"}
+                
+                if resource_id == "system_info":
+                    return {
+                        "id": "system_info",
+                        "title": "System Information",
+                        "text": f"Platform: {platform.system()}\nVersion: {platform.version()}\nArchitecture: {platform.architecture()[0]}\nHostname: {platform.node()}\nPython: {platform.python_version()}",
+                        "url": "system://info",
+                        "metadata": {"source": "system", "type": "info"}
+                    }
+                elif resource_id == "processes":
+                    try:
+                        result = await _run_command(["ps", "aux"])
+                        return {
+                            "id": "processes",
+                            "title": "Running Processes",
+                            "text": result.get("stdout", ""),
+                            "url": "system://processes", 
+                            "metadata": {"source": "system", "type": "processes"}
+                        }
+                    except Exception as e:
+                        return {"error": f"Failed to fetch processes: {str(e)}"}
+                elif resource_id.startswith("file_"):
+                    filename = resource_id[5:]  # Remove "file_" prefix
+                    file_path = os.path.join(os.path.expanduser("~"), filename)
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()[:10000]  # Limit content size
+                        return {
+                            "id": resource_id,
+                            "title": f"File: {filename}",
+                            "text": content,
+                            "url": f"file://{file_path}",
+                            "metadata": {"source": "file", "type": "text", "path": file_path}
+                        }
+                    except Exception as e:
+                        return {"error": f"Failed to read file: {str(e)}"}
+                else:
+                    return {"error": f"Unknown resource ID: {resource_id}"}
             else:
                 raise ValueError(f"Unknown tool: {name}")
         except Exception as e:
@@ -258,11 +357,16 @@ def create_app(host: str = "127.0.0.1", port: int = 8765) -> FastAPI:
                 LOGGER.debug(f"Sending SSE endpoint event: {repr(event_data)}")
                 yield event_data
                 
+                for i in range(3):
+                    immediate_event = f"event: init\ndata: ready-{i}\n\n"
+                    LOGGER.debug(f"Sending immediate event {i}: {repr(immediate_event)}")
+                    yield immediate_event
+                
                 import asyncio
                 counter = 0
                 while True:
                     try:
-                        await asyncio.sleep(15)
+                        await asyncio.sleep(2)
                         if await request.is_disconnected():
                             LOGGER.debug("SSE client disconnected")
                             break
@@ -281,11 +385,15 @@ def create_app(host: str = "127.0.0.1", port: int = 8765) -> FastAPI:
             event_stream(), 
             media_type="text/event-stream",
             headers={
-                "Cache-Control": "no-cache",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
                 "Connection": "keep-alive",
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type"
+                "Access-Control-Allow-Headers": "Content-Type, Cache-Control",
+                "X-Accel-Buffering": "no",
+                "X-Proxy-Buffering": "no",
+                "Proxy-Buffering": "off",
+                "Transfer-Encoding": "chunked"
             }
         )
     
@@ -350,18 +458,33 @@ def create_app(host: str = "127.0.0.1", port: int = 8765) -> FastAPI:
                     raise HTTPException(status_code=400, detail="Tool name required")
                 
                 result = await execute_tool(tool_name, arguments)
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json.dumps(result, indent=2)
-                            }
-                        ]
+                
+                if tool_name in ["search", "fetch"]:
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(result, indent=2)
+                                }
+                            ]
+                        }
                     }
-                }
+                else:
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(result, indent=2)
+                                }
+                            ]
+                        }
+                    }
             else:
                 response = {
                     "jsonrpc": "2.0",
