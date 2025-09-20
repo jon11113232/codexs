@@ -3,8 +3,16 @@
 ## TASK FOR CHATGPTCODER
 User has assigned you to implement the working ChatGPT MCP connector. The kupn repo has a working implementation that needs to be adapted for the codexs repo.
 
-## CRITICAL ISSUE RESOLVED
-The SSE streaming issue has been fixed in kupn repo. The problem was using `EventSourceResponse` which caused malformed SSE events with double "data:" prefixes. The fix uses `StreamingResponse` instead.
+## CRITICAL ISSUE IDENTIFIED - SSE TUNNEL PROBLEM
+**Current Status:** ChatGPT shows "Error creating connector" due to SSE streaming failure through cloudflared tunnel.
+
+**Root Cause Analysis:**
+- ✅ SSE endpoint works locally: `curl -N http://localhost:8765/sse` streams events properly
+- ❌ SSE endpoint hangs via tunnel: `curl -N https://farmer-thriller-reproduction-cure.trycloudflare.com/sse` times out
+- ✅ JSON-RPC endpoints work via tunnel: initialize/tools methods respond correctly
+- ❌ ChatGPT validation fails because SSE handshake never completes
+
+**The Fix:** SSE streaming through cloudflared tunnel needs buffering/connection handling fixes.
 
 ## WORKING IMPLEMENTATION AVAILABLE
 Copy the complete working implementation from `/home/ubuntu/repos/kupn/chatgpt_mac_mcp_server.py` - this file contains:
@@ -50,16 +58,45 @@ curl -X POST http://localhost:8765/message?session_id=test \
   -d '{"jsonrpc":"2.0","id":"test","method":"tools/list","params":{}}'
 ```
 
+## OPENAI MCP DOCUMENTATION REQUIREMENTS
+User provided official OpenAI MCP documentation specifying ChatGPT connectors must implement:
+
+### Required Tools for ChatGPT Integration
+1. **search tool** - Returns search results from data source
+   - Input: `query` string
+   - Output: `{"results": [{"id": "doc-1", "title": "...", "url": "..."}]}`
+   - Must return JSON-encoded string in MCP content format
+
+2. **fetch tool** - Retrieves full document content
+   - Input: document `id` string  
+   - Output: `{"id": "doc-1", "title": "...", "text": "full content", "url": "...", "metadata": {...}}`
+   - Must return JSON-encoded string in MCP content format
+
+### MCP Content Format
+All tool responses must use MCP content array format:
+```json
+{
+  "content": [
+    {
+      "type": "text", 
+      "text": "{\"results\":[...]}" // JSON-encoded string
+    }
+  ]
+}
+```
+
 ## DEPLOYMENT REQUIREMENTS
-- Use cloudflared tunnel or similar to expose server publicly
+- **Current Server:** https://farmer-thriller-reproduction-cure.trycloudflare.com (running but SSE broken)
+- Fix SSE streaming through cloudflared tunnel (buffering/connection issue)
 - Test ChatGPT connector creation with the public URL
 - Verify connector validation completes without timeout
 
 ## SUCCESS CRITERIA
 - [ ] Server starts without errors
-- [ ] SSE endpoint streams properly formatted events
-- [ ] JSON-RPC methods return valid MCP responses
-- [ ] ChatGPT connector creation succeeds
+- [ ] SSE endpoint streams properly through cloudflared tunnel (CRITICAL FIX NEEDED)
+- [ ] JSON-RPC methods return valid MCP responses (✅ Currently working)
+- [ ] Implement search/fetch tools per OpenAI MCP documentation
+- [ ] ChatGPT connector creation succeeds without "Error creating connector"
 - [ ] Mac system control tools work correctly
 
 ## TECHNICAL DETAILS
@@ -90,14 +127,27 @@ data: /message?session_id=123
 4. GET request to /sse for SSE handshake
 5. POST requests to /message for JSON-RPC methods
 
+## CURRENT SERVER STATUS
+- **URL:** https://farmer-thriller-reproduction-cure.trycloudflare.com
+- **Local Server:** Running on localhost:8765 (works correctly)
+- **Tunnel Issue:** SSE streaming hangs through cloudflared, causing ChatGPT validation timeout
+- **JSON-RPC:** Working correctly through tunnel
+
+## IMMEDIATE PRIORITY FIXES
+1. **Fix SSE streaming through cloudflared tunnel** - This is blocking ChatGPT connector validation
+2. **Implement search/fetch tools** per OpenAI MCP documentation requirements
+3. **Test connector creation** in ChatGPT to verify "Error creating connector" is resolved
+
 ## PRIORITY: IMMEDIATE
-User has given up on this project due to repeated failures. This is your chance to deliver a working solution. The implementation exists and works - just copy it and deploy it correctly.
+User has given up on this project due to repeated failures. This is your chance to deliver a working solution. 
+
+**Key Insight:** The server implementation works locally but SSE streaming fails through the tunnel. Focus on fixing the tunnel SSE streaming issue first, then add the required search/fetch tools.
 
 ## CONTACT
-If you encounter any issues, the working server logs show proper SSE event generation:
+Server logs show proper local SSE event generation:
 ```
 DEBUG:__main__:Sending SSE endpoint event: 'event: endpoint\ndata: /message?session_id=...\n\n'
 DEBUG:__main__:Sending SSE heartbeat: 'event: heartbeat\ndata: ping-1\n\n'
 ```
 
-This proves the StreamingResponse implementation works correctly.
+But tunnel access hangs: `curl -N https://farmer-thriller-reproduction-cure.trycloudflare.com/sse` (no output, times out)
